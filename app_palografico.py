@@ -32,6 +32,17 @@ escolaridade = st.sidebar.selectbox(
     ["Ensino Fundamental", "Ensino Médio", "Ensino Superior"]
 )
 
+# Opção de ajuste do corte do cabeçalho na barra lateral
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Ajuste de Região de Leitura")
+corte_cabecalho = st.sidebar.slider(
+    "Ignorar topo da folha (%)", 
+    min_value=10, 
+    max_value=40, 
+    value=22, 
+    help="Aumente este valor se o sistema estiver lendo o nome ou caixas do formulário superior."
+)
+
 # --- MÓDULO DE PROCESSAMENTO DE IMAGEM E PDF ---
 contagem_palos = 0
 img_contours = None
@@ -49,18 +60,25 @@ if uploaded_file is not None:
             
             if len(page.images) > 0:
                 image_file = page.images[0]
-                # Converte os dados binários usando io.BytesIO para evitar o ValueError
                 image = Image.open(io.BytesIO(image_file.data))
             else:
-                st.error("Não foi possível extrair uma imagem válida deste PDF. Certifique-se de que é um PDF digitalizado.")
+                st.error("Não foi possível extrair uma imagem válida deste PDF.")
         else:
             image = Image.open(uploaded_file)
         
         if image is not None:
             img_array = np.array(image.convert('RGB'))
-            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            height_total, width_total, _ = img_array.shape
             
-            # --- PRÉ-PROCESSAMENTO AVANÇADO ---
+            # --- DEFINIÇÃO DA REGIÃO DE INTERESSE (ROI) ---
+            # Corta a porcentagem definida no slider para ignorar o cabeçalho
+            y_inicio = int(height_total * (corte_cabecalho / 100))
+            
+            # Trabalhamos apenas com a parte inferior da imagem (onde ficam os palos reais)
+            roi = img_array[y_inicio:, :]
+            gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+            
+            # --- PRÉ-PROCESSAMENTO DA ÁREA DO TESTE ---
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
             gray_enhanced = clahe.apply(gray)
             blurred = cv2.GaussianBlur(gray_enhanced, (3, 3), 0)
@@ -73,27 +91,34 @@ if uploaded_file is not None:
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             img_contours = img_array.copy()
+            
+            # Desenha uma linha vermelha mostrando onde começa a leitura
+            cv2.line(img_contours, (0, y_inicio), (width_total, y_inicio), (255, 0, 0), 3)
+            
             contagem_palos = 0
-            height_img = img_array.shape[0]
             
             for cnt in contours:
                 x, y, w, h = cv2.boundingRect(cnt)
-                min_h = height_img * 0.015
+                
+                # Ajusta a coordenada Y para desenhar na imagem inteira original
+                y_real = y + y_inicio
+                
+                min_h = height_total * 0.015
                 aspect_ratio = h / max(w, 1)
-                max_w = height_img * 0.01
+                max_w = height_total * 0.01
 
-                if h > min_h and h < (height_img * 0.1) and aspect_ratio > 1.8 and w < max_w:
+                if h > min_h and h < (height_total * 0.1) and aspect_ratio > 1.8 and w < max_w:
                     contagem_palos += 1
-                    cv2.rectangle(img_contours, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    cv2.rectangle(img_contours, (x, y_real), (x + w, y_real + h), (0, 255, 0), 2)
                     
             # Exibição dos Resultados
             col_img1, col_img2 = st.columns(2)
             with col_img1:
                 st.image(image, caption="Documento Enviado", use_column_width=True)
             with col_img2:
-                st.image(img_contours, caption=f"Leitura Automática: ~{contagem_palos} traços identificados (em verde)", use_column_width=True)
+                st.image(img_contours, caption=f"Leitura Automática (Linha Vermelha = Início da Análise)", use_column_width=True)
                 
-            st.info(f"💡 **Sugestão da Câmera:** Foram identificados aproximadamente **{contagem_palos} palos** no total da folha.")
+            st.info(f"💡 **Sugestão da Câmera:** Foram identificados aproximadamente **{contagem_palos} palos** na área de teste.")
 
     except Exception as e:
         st.error(f"Erro ao processar o arquivo: {e}")
