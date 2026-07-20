@@ -32,16 +32,15 @@ escolaridade = st.sidebar.selectbox(
     ["Ensino Fundamental", "Ensino Médio", "Ensino Superior"]
 )
 
-# Opção de ajuste do corte do cabeçalho na barra lateral
+# --- AJUSTE PRECISO DAS MARGENS ---
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ Ajuste de Região de Leitura")
-corte_cabecalho = st.sidebar.slider(
-    "Ignorar topo da folha (%)", 
-    min_value=10, 
-    max_value=40, 
-    value=22, 
-    help="Aumente este valor se o sistema estiver lendo o nome ou caixas do formulário superior."
-)
+st.sidebar.header("🎯 Ajuste das Margens de Análise")
+st.sidebar.caption("Defina a área exata do teste do candidato:")
+
+corte_topo = st.sidebar.slider("Margem Superior - Início do Teste (%)", 0, 100, 48)
+corte_base = st.sidebar.slider("Margem Inferior - Fim do Teste (%)", 0, 100, 100)
+corte_esquerda = st.sidebar.slider("Margem Esquerda (%)", 0, 50, 0)
+corte_direita = st.sidebar.slider("Margem Direita (%)", 50, 100, 100)
 
 # --- MÓDULO DE PROCESSAMENTO DE IMAGEM E PDF ---
 contagem_palos = 0
@@ -70,55 +69,60 @@ if uploaded_file is not None:
             img_array = np.array(image.convert('RGB'))
             height_total, width_total, _ = img_array.shape
             
-            # --- DEFINIÇÃO DA REGIÃO DE INTERESSE (ROI) ---
-            # Corta a porcentagem definida no slider para ignorar o cabeçalho
-            y_inicio = int(height_total * (corte_cabecalho / 100))
+            # --- CÁLCULO DOS LIMITES REAIS DA MARGEM ---
+            y_min = int(height_total * (corte_topo / 100))
+            y_max = int(height_total * (corte_base / 100))
+            x_min = int(width_total * (corte_esquerda / 100))
+            x_max = int(width_total * (corte_direita / 100))
             
-            # Trabalhamos apenas com a parte inferior da imagem (onde ficam os palos reais)
-            roi = img_array[y_inicio:, :]
-            gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-            
-            # --- PRÉ-PROCESSAMENTO DA ÁREA DO TESTE ---
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            gray_enhanced = clahe.apply(gray)
-            blurred = cv2.GaussianBlur(gray_enhanced, (3, 3), 0)
-            thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-            
-            # --- FILTRAGEM MORFOLÓGICA ---
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 5))
-            mask = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
-            
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            img_contours = img_array.copy()
-            
-            # Desenha uma linha vermelha mostrando onde começa a leitura
-            cv2.line(img_contours, (0, y_inicio), (width_total, y_inicio), (255, 0, 0), 3)
-            
-            contagem_palos = 0
-            
-            for cnt in contours:
-                x, y, w, h = cv2.boundingRect(cnt)
+            # Validação para evitar cortes inválidos
+            if y_max > y_min and x_max > x_min:
+                # Extrai apenas a região delimitada pelas margens do candidato
+                roi = img_array[y_min:y_max, x_min:x_max]
+                gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
                 
-                # Ajusta a coordenada Y para desenhar na imagem inteira original
-                y_real = y + y_inicio
+                # --- PRÉ-PROCESSAMENTO DA ÁREA DO TESTE ---
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+                gray_enhanced = clahe.apply(gray)
+                blurred = cv2.GaussianBlur(gray_enhanced, (3, 3), 0)
+                thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
                 
-                min_h = height_total * 0.015
-                aspect_ratio = h / max(w, 1)
-                max_w = height_total * 0.01
-
-                if h > min_h and h < (height_total * 0.1) and aspect_ratio > 1.8 and w < max_w:
-                    contagem_palos += 1
-                    cv2.rectangle(img_contours, (x, y_real), (x + w, y_real + h), (0, 255, 0), 2)
+                # --- FILTRAGEM MORFOLÓGICA ---
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 5))
+                mask = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+                
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                img_contours = img_array.copy()
+                
+                # Desenha a caixa delimitadora da margem (Em Azul)
+                cv2.rectangle(img_contours, (x_min, y_min), (x_max, y_max), (255, 0, 0), 3)
+                
+                contagem_palos = 0
+                
+                for cnt in contours:
+                    x, y, w, h = cv2.boundingRect(cnt)
                     
-            # Exibição dos Resultados
-            col_img1, col_img2 = st.columns(2)
-            with col_img1:
-                st.image(image, caption="Documento Enviado", use_column_width=True)
-            with col_img2:
-                st.image(img_contours, caption=f"Leitura Automática (Linha Vermelha = Início da Análise)", use_column_width=True)
-                
-            st.info(f"💡 **Sugestão da Câmera:** Foram identificados aproximadamente **{contagem_palos} palos** na área de teste.")
+                    # Converte coordenadas para a imagem global
+                    x_real = x + x_min
+                    y_real = y + y_min
+                    
+                    min_h = height_total * 0.015
+                    aspect_ratio = h / max(w, 1)
+                    max_w = height_total * 0.01
+
+                    if h > min_h and h < (height_total * 0.1) and aspect_ratio > 1.8 and w < max_w:
+                        contagem_palos += 1
+                        cv2.rectangle(img_contours, (x_real, y_real), (x_real + w, y_real + h), (0, 255, 0), 2)
+                        
+                # Exibição dos Resultados
+                col_img1, col_img2 = st.columns(2)
+                with col_img1:
+                    st.image(image, caption="Documento Enviado", use_column_width=True)
+                with col_img2:
+                    st.image(img_contours, caption="Área Útil do Teste (Caixa Azul = Margens do Candidato)", use_column_width=True)
+                    
+                st.info(f"💡 **Sugestão da Câmera:** Foram identificados aproximadamente **{contagem_palos} palos** dentro da margem delimitada.")
 
     except Exception as e:
         st.error(f"Erro ao processar o arquivo: {e}")
